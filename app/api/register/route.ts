@@ -1,17 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcrypt from 'bcryptjs';
-import { Pool } from 'pg';
-
-// Create database connection
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  }
-});
+import { createClient } from '@supabase/supabase-js';
 
 export async function POST(request: NextRequest) {
   try {
+    // Initialize Supabase client
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+    if (!supabaseUrl || !supabaseKey) {
+      return NextResponse.json(
+        { error: 'Database configuration missing' },
+        { status: 500 }
+      );
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseKey);
+
     const body = await request.json();
     const { name, email, password } = body;
 
@@ -41,10 +46,13 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if user already exists
-    const checkQuery = 'SELECT id FROM users WHERE email = $1';
-    const checkResult = await pool.query(checkQuery, [email]);
+    const { data: existingUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', email)
+      .single();
 
-    if (checkResult.rows.length > 0) {
+    if (existingUser) {
       return NextResponse.json(
         { error: 'Email already registered' },
         { status: 409 }
@@ -55,24 +63,36 @@ export async function POST(request: NextRequest) {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     // Insert user into database
-    const insertQuery = `
-      INSERT INTO users (name, email, password, "createdAt")
-      VALUES ($1, $2, $3, NOW())
-      RETURNING id, name, email, "createdAt"
-    `;
-    const insertResult = await pool.query(insertQuery, [name, email, hashedPassword]);
+    const { data: newUser, error: insertError } = await supabase
+      .from('users')
+      .insert([
+        {
+          name,
+          email,
+          password: hashedPassword,
+          createdAt: new Date().toISOString()
+        }
+      ])
+      .select()
+      .single();
 
-    const user = insertResult.rows[0];
+    if (insertError) {
+      console.error('Insert error:', insertError);
+      return NextResponse.json(
+        { error: 'Failed to create user', details: insertError.message },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(
       {
         success: true,
         message: 'Registration successful!',
         user: {
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          createdAt: user.createdAt
+          id: newUser.id,
+          name: newUser.name,
+          email: newUser.email,
+          createdAt: newUser.createdAt
         }
       },
       { status: 201 }
