@@ -8,11 +8,10 @@ export async function POST(request: NextRequest) {
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    // Debug logging (remove after fixing)
+    // Debug logging
     console.log('Supabase URL exists:', !!supabaseUrl);
     console.log('Supabase Key exists:', !!supabaseKey);
     console.log('Supabase URL value:', supabaseUrl);
-    console.log('Supabase Key length:', supabaseKey?.length);
 
     if (!supabaseUrl || !supabaseKey) {
       return NextResponse.json(
@@ -28,10 +27,19 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Create Supabase client with REST API only (no direct DB connection)
     const supabase = createClient(supabaseUrl, supabaseKey, {
       auth: {
         autoRefreshToken: false,
         persistSession: false
+      },
+      db: {
+        schema: 'public'
+      },
+      global: {
+        headers: {
+          'Content-Type': 'application/json'
+        }
       }
     });
 
@@ -63,22 +71,27 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Check if user already exists
-    const { data: existingUser, error: checkError } = await supabase
+    // Check if user already exists using REST API
+    const { data: existingUsers, error: checkError } = await supabase
       .from('users')
       .select('id')
       .eq('email', email)
-      .single();
+      .limit(1);
 
-    if (checkError && checkError.code !== 'PGRST116') {
+    if (checkError) {
       console.error('Check error:', checkError);
       return NextResponse.json(
-        { error: 'Database error while checking user', details: checkError.message },
+        { 
+          error: 'Database error while checking user', 
+          details: checkError.message,
+          hint: checkError.hint,
+          code: checkError.code
+        },
         { status: 500 }
       );
     }
 
-    if (existingUser) {
+    if (existingUsers && existingUsers.length > 0) {
       return NextResponse.json(
         { error: 'Email already registered' },
         { status: 409 }
@@ -88,17 +101,15 @@ export async function POST(request: NextRequest) {
     // Hash password
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Insert user into database
+    // Insert user into database using REST API
     const { data: newUser, error: insertError } = await supabase
       .from('users')
-      .insert([
-        {
-          name,
-          email,
-          password: hashedPassword,
-          createdAt: new Date().toISOString()
-        }
-      ])
+      .insert({
+        name,
+        email,
+        password: hashedPassword,
+        createdAt: new Date().toISOString()
+      })
       .select()
       .single();
 
